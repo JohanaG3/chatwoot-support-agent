@@ -23,7 +23,7 @@ class FakeLLM:
     def clarifying_question(self, text):
         return "¿Qué función de Chatwoot quieres usar?"
 
-    def draft(self, text, context, feedback):
+    def draft(self, text, context, feedback, previous=None):
         self.drafts += 1
         return f"Borrador {self.drafts}: pega el script del widget [1]." + (f" (corrige: {feedback[-1]})" if feedback else "")
 

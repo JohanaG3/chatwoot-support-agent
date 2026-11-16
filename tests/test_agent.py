@@ -65,11 +65,31 @@ def test_reject_redrafts_with_feedback_then_escalates_after_three(client):
     assert s["escalation_reason"] == "3 drafts rejected" and s["feedback"] == ["cambio 1", "cambio 2", "cambio 3"]
 
 
-def test_edit_sends_the_reviewers_text(client, tmp_path):
+def test_edit_waits_for_confirmation_then_sends_the_reviewers_text(client):
     t = new(client, "Widget", "widget")
     wait(client, t["ticket_id"], {"waiting_approval"})
-    client.post(f"/tickets/{t['ticket_id']}/decision", json={"action": "edit", "text": "Mi versión."})
-    assert wait(client, t["ticket_id"], {"sent"})["final_text"] == "Mi versión."
+    client.post(f"/tickets/{t['ticket_id']}/decision", json={"action": "edit", "text": "Sí, se puede."})
+    s = wait(client, t["ticket_id"], {"waiting_confirmation"})
+    assert s["waiting_for"]["text"] == "Sí, se puede." and s["final_text"] is None
+    client.post(f"/tickets/{t['ticket_id']}/confirm", json={"confirm": True})
+    assert wait(client, t["ticket_id"], {"sent"})["final_text"] == "Sí, se puede."
+
+
+def test_cancelled_edit_goes_back_to_the_same_draft(client):
+    t = new(client, "Widget", "widget")
+    first = wait(client, t["ticket_id"], {"waiting_approval"})["draft"]
+    client.post(f"/tickets/{t['ticket_id']}/decision", json={"action": "edit", "text": "Oops"})
+    wait(client, t["ticket_id"], {"waiting_confirmation"})
+    client.post(f"/tickets/{t['ticket_id']}/confirm", json={"confirm": False})
+    s = wait(client, t["ticket_id"], {"waiting_approval"})
+    assert s["draft"] == first and s["attempts"] == 1
+
+
+def test_placeholder_text_is_refused(client):
+    t = new(client, "Widget", "widget")
+    wait(client, t["ticket_id"], {"waiting_approval"})
+    assert client.post(f"/tickets/{t['ticket_id']}/decision", json={"action": "edit", "text": "string"}).status_code == 422
+    assert client.post(f"/tickets/{t['ticket_id']}/confirm", json={"confirm": True}).status_code == 409
 
 
 def test_ambiguous_asks_the_customer_then_continues(client):

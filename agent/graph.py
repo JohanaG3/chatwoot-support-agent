@@ -2,8 +2,9 @@
 
     classify ──support──────────────► search ──useful──► draft ──► review (pause: human)
        │  └─ambiguous (1st time)─► ask_customer ─► wait_customer (pause: customer) ─► classify
-       └─not_support / still ambiguous ─► escalate              │        ├─ approve / edit ─► send
-                            search ──nothing useful──► escalate │        └─ reject ─► draft (max 3) ─► escalate
+       └─not_support / still ambiguous ─► escalate        ├─ approve ─► send
+                            search ──nothing useful──► escalate ├─ edit ─► confirm_edit (pause) ─► send / back to review
+                                                          └─ reject ─► draft (max 3) ─► escalate
 
 Pauses use interrupt(): the graph stops, the checkpointer saves the state, and the run resumes when
 the API receives the customer's reply or the reviewer's decision, minutes or days later.
@@ -32,6 +33,7 @@ class Ticket(TypedDict, total=False):
     attempts: int
     feedback: Annotated[list, operator.add]        # reviewer comments, appended
     decision: str
+    edited_text: str
     final_text: str
     status: str                                    # sent | escalated
     escalation_reason: str
@@ -98,7 +100,8 @@ def build(llm, checkpointer):
 
     @node("draft")
     def draft(t):
-        text = llm.draft(email_text(t), context_text(t["chunks"]), t.get("feedback", []))
+        previous = t.get("draft", "").split("\n\nFuentes:")[0] if t.get("feedback") else None
+        text = llm.draft(email_text(t), context_text(t["chunks"]), t.get("feedback", []), previous)
         return {"draft": sources(text, t["chunks"]), "attempts": t.get("attempts", 0) + 1}
 
     @node("review")
@@ -107,8 +110,16 @@ def build(llm, checkpointer):
         if d["action"] == "approve":
             return {"decision": "approve", "final_text": t["draft"]}
         if d["action"] == "edit":
-            return {"decision": "edit", "final_text": d["text"]}
+            return {"decision": "edit", "edited_text": d["text"]}
         return {"decision": "reject", "feedback": [d["comment"]]}
+
+    @node("confirm_edit")
+    def confirm_edit(t):
+        """A human-written reply goes out verbatim, so the reviewer sees it once more before it's sent."""
+        ok = interrupt({"kind": "confirm_edit", "text": t["edited_text"]})
+        if ok:
+            return {"decision": "edit_confirmed", "final_text": t["edited_text"]}
+        return {"decision": "edit_cancelled", "edited_text": ""}
 
     @node("send")
     def send(t):
@@ -142,12 +153,17 @@ def build(llm, checkpointer):
         return "draft" if best >= c.MIN_SIMILARITY else "escalate"
 
     def after_review(t):
-        if t["decision"] in ("approve", "edit"):
+        if t["decision"] == "approve":
             return "send"
+        if t["decision"] == "edit":
+            return "confirm_edit"
         return "draft" if t["attempts"] < c.MAX_DRAFTS else "escalate"
 
     g = StateGraph(Ticket)
-    for fn in (classify, ask_customer, wait_customer, search, draft, review, send, escalate):
+    def after_confirm(t):
+        return "send" if t["decision"] == "edit_confirmed" else "review"
+
+    for fn in (classify, ask_customer, wait_customer, search, draft, review, confirm_edit, send, escalate):
         g.add_node(fn.__name__, fn)
     g.add_edge(START, "classify")
     g.add_conditional_edges("classify", after_classify, ["search", "ask_customer", "escalate"])
@@ -155,7 +171,8 @@ def build(llm, checkpointer):
     g.add_edge("wait_customer", "classify")
     g.add_conditional_edges("search", after_search, ["draft", "escalate"])
     g.add_edge("draft", "review")
-    g.add_conditional_edges("review", after_review, ["send", "draft", "escalate"])
+    g.add_conditional_edges("review", after_review, ["send", "confirm_edit", "draft", "escalate"])
+    g.add_conditional_edges("confirm_edit", after_confirm, ["send", "review"])
     g.add_edge("send", END)
     g.add_edge("escalate", END)
     return g.compile(checkpointer=checkpointer)

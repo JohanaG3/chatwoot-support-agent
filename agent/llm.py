@@ -28,9 +28,11 @@ Devuelve solo la pregunta."""
 
 DRAFT = """Eres el soporte de Chatwoot y redactas una respuesta por correo, en español, de 3 a 6 frases, cálida y concreta.
 Usa la información de los fragmentos, pero úsalos todos: evalúa el contexto que tiene cada uno, a ver si encuentras la respuesta.
-Cita cada afirmación con el número del fragmento, por ejemplo [2].
+Cita cada afirmación con el número del fragmento, por ejemplo [2]. Los saludos y despedidas no llevan cita.
 Si no está claro o definitivamente no hay nada, no lo inventes: dilo y ofrece pasar el caso a una persona del equipo.
-Si hay comentarios del revisor, corrígelos todos en esta versión."""
+Si sí encontraste la respuesta, no ofrezcas pasar el caso a una persona.
+Si hay comentarios del revisor, corrígelos todos en esta versión y que el cambio se note:
+si pide algo más corto, usa como mucho la mitad de frases que el borrador anterior (máximo 3)."""
 
 
 class Gemini:
@@ -74,9 +76,13 @@ class Gemini:
     def clarifying_question(self, email_text):
         return self._generate("clarify", CLARIFY, email_text).text.strip()
 
-    def draft(self, email_text, context, feedback):
+    def draft(self, email_text, context, feedback, previous=None):
         notes = "\n".join(f"- {f}" for f in feedback)
-        message = f"Fragmentos:\n{context}\n\n{email_text}" + (f"\n\nComentarios del revisor:\n{notes}" if notes else "")
+        message = f"Fragmentos:\n{context}\n\n{email_text}"
+        if previous:
+            message += f"\n\nBorrador anterior (rechazado):\n{previous}"
+        if notes:
+            message += f"\n\nComentarios del revisor:\n{notes}"
         return self._generate("draft", DRAFT, message).text.strip()
 
     def retrieve(self, query):

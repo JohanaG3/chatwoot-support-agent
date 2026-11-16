@@ -48,6 +48,13 @@ class ReplyIn(BaseModel):
     text: str = Field(examples=["Me refiero al chat en vivo de mi página web."])
 
 
+PLACEHOLDERS = {"string", "text", "tu versión", "your text"}  # what forms prefill; short real replies are fine
+
+
+class ConfirmIn(BaseModel):
+    confirm: bool = Field(description="true sends your edited text as it is; false goes back to the draft")
+
+
 class DecisionIn(BaseModel):
     action: Literal["approve", "edit", "reject"]
     text: str | None = Field(None, description="Your version of the reply (action=edit)")
@@ -57,6 +64,8 @@ class DecisionIn(BaseModel):
     def check(self):
         if self.action == "edit" and not (self.text or "").strip():
             raise ValueError("edit needs text")
+        if self.action == "edit" and self.text.strip().lower() in PLACEHOLDERS:
+            raise ValueError("that's the form's example text, not a reply")
         if self.action == "reject" and not (self.comment or "").strip():
             raise ValueError("reject needs a comment")
         return self
@@ -177,7 +186,8 @@ def snapshot_status(snap):
     if not snap.values:
         return "unknown"
     if p := pending(snap):
-        return "waiting_customer" if p["kind"] == "customer_reply" else "waiting_approval"
+        return {"customer_reply": "waiting_customer", "approval": "waiting_approval",
+                "confirm_edit": "waiting_confirmation"}[p["kind"]]
     return snap.values.get("status") or "running"
 
 
@@ -227,7 +237,7 @@ def get_ticket(ticket_id: str, request: Request):
             "waiting_for": pending(snap), "next": list(snap.next), "category": v.get("category"),
             "clarifications": v.get("clarifications", []), "attempts": v.get("attempts", 0),
             "feedback": v.get("feedback", []), "draft": v.get("draft"), "final_text": v.get("final_text"),
-            "escalation_reason": v.get("escalation_reason"),
+            "edited_text": v.get("edited_text") or None, "escalation_reason": v.get("escalation_reason"),
             "sources": [{k: x[k] for k in ("n", "title", "similarity")} for x in v.get("chunks", [])]}
 
 
@@ -249,6 +259,16 @@ async def decision(ticket_id: str, d: DecisionIn, request: Request):
         raise HTTPException(409, f"ticket is {snapshot_status(snap)}, not waiting for approval")
     await enqueue(request, snap.values["ticket_id"], snap.values["trace_id"], d.model_dump(), resume=True)
     return {"ticket_id": ticket_id, "queued": d.action}
+
+
+@app.post("/tickets/{ticket_id}/confirm", status_code=202)
+async def confirm(ticket_id: str, body: ConfirmIn, request: Request):
+    """After an edit: check the exact text the customer will get, then send it or go back."""
+    snap = get_snapshot(request, ticket_id)
+    if (pending(snap) or {}).get("kind") != "confirm_edit":
+        raise HTTPException(409, f"ticket is {snapshot_status(snap)}, not waiting for an edit confirmation")
+    await enqueue(request, snap.values["ticket_id"], snap.values["trace_id"], body.confirm, resume=True)
+    return {"ticket_id": ticket_id, "queued": "send" if body.confirm else "back_to_review"}
 
 
 @app.get("/tickets/{ticket_id}/events")
