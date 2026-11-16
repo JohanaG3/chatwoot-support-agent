@@ -117,3 +117,11 @@ def test_event_stream_times_out(client):
     wait(client, t["ticket_id"], {"waiting_customer"})
     with client.stream("GET", f"/tickets/{t['ticket_id']}/events?timeout=0.5&since=99") as r:
         assert "event: timeout" in "".join(r.iter_text())
+
+
+def test_ticket_id_with_stray_spaces_is_found(client):
+    t = new(client, "Ayuda", "Necesito ayuda")
+    wait(client, t["ticket_id"], {"waiting_customer"})
+    r = client.post(f"/tickets/{t['ticket_id']}%20/customer-reply", json={"text": "El chat de mi web"})
+    assert r.status_code == 202
+    assert wait(client, t["ticket_id"], {"waiting_approval"})["clarifications"]

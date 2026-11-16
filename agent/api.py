@@ -182,6 +182,7 @@ def snapshot_status(snap):
 
 
 def get_snapshot(request, ticket_id):
+    ticket_id = ticket_id.strip()  # ids pasted from a browser often carry a trailing space
     snap = request.app.state.graph.get_state({"configurable": {"thread_id": ticket_id}})
     if not snap.values:
         raise HTTPException(404, "unknown ticket")
@@ -236,7 +237,7 @@ async def customer_reply(ticket_id: str, reply: ReplyIn, request: Request):
     snap = get_snapshot(request, ticket_id)
     if (pending(snap) or {}).get("kind") != "customer_reply":
         raise HTTPException(409, f"ticket is {snapshot_status(snap)}, not waiting for the customer")
-    await enqueue(request, ticket_id, snap.values["trace_id"], reply.text, resume=True)
+    await enqueue(request, snap.values["ticket_id"], snap.values["trace_id"], reply.text, resume=True)
     return {"ticket_id": ticket_id, "queued": "customer_reply"}
 
 
@@ -246,7 +247,7 @@ async def decision(ticket_id: str, d: DecisionIn, request: Request):
     snap = get_snapshot(request, ticket_id)
     if (pending(snap) or {}).get("kind") != "approval":
         raise HTTPException(409, f"ticket is {snapshot_status(snap)}, not waiting for approval")
-    await enqueue(request, ticket_id, snap.values["trace_id"], d.model_dump(), resume=True)
+    await enqueue(request, snap.values["ticket_id"], snap.values["trace_id"], d.model_dump(), resume=True)
     return {"ticket_id": ticket_id, "queued": d.action}
 
 
